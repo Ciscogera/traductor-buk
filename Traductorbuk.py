@@ -124,9 +124,9 @@ def convert_time_to_buk_sigla(val, shift_map):
     if clean_val in ['COMPENSADO', 'C']:
         return 'C', False  # Compensado queda como 'C'
     if clean_val in ['LICENCIA', 'LIC']:
-        return 'L', False  # Licencia previamente ingresada en BUK
+        return 'BASE', False  # Licencia previamente ingresada en BUK
     if clean_val in ['VACACION', 'VACACIONES', 'V']:
-        return 'V', False  # Vacaciones previamente ingresadas en BUK
+        return 'BASE', False  # Vacaciones previamente ingresadas en BUK
     if clean_val in ['BASE', 'TURNO BASE']:
         return 'BASE', False
 
