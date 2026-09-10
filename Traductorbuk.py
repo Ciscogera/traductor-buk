@@ -157,7 +157,7 @@ def process_image_with_gemini(image_bytes, api_key):
         return None
     
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-3.6-flash')
     
     prompt = """
     Analiza esta imagen que contiene un cuadrante de horarios de personal de restaurant/bar.
