@@ -320,12 +320,12 @@ if buk_file is not None:
                 st.session_state['extracted_schedules'] = parsed_list
                 raw_schedules = parsed_list
 
-    # -------------------------------------------------------------------------
+# -------------------------------------------------------------------------
     # HOMOLOGACIÓN INTELIGENTE CON FILTRO POR ÁREA Y DETECCIÓN DE AMBIGÜEDAD
     # -------------------------------------------------------------------------
     if raw_schedules:
         st.divider()
-        st.subheader("🛠️ Homologación e Inspección de Datos Extraídos")
+        st.subheader("Homologación e Inspección de Datos Extraídos")
         
         mapped_entries = [] # tuples of (nombre_buk_oficial, schedule_item_dict)
         unresolved_names = [] # list of (raw_n, section_str, candidate_list, schedule_item_dict)
@@ -338,8 +338,17 @@ if buk_file is not None:
             if not raw_n or raw_n == 'NAN':
                 continue
             
-            # 1. Alias predefinido (si existe en ALIAS_PREDEFINIDOS)
-            exact_match = ALIAS_PREDEFINIDOS.get(raw_n, None)
+            exact_match = None
+            
+            # 1. Alias predefinido (verificar si existe exactamente en la lista BUK)
+            alias_target = ALIAS_PREDEFINIDOS.get(raw_n, None)
+            if alias_target:
+                matches_alias = tc_df[tc_df['Nombre del Colaborador'].str.upper() == alias_target.upper()]
+                if not matches_alias.empty:
+                    exact_match = matches_alias.iloc[0]['Nombre del Colaborador']
+                else:
+                    # Si el alias no es exacto (ej. falta segundo apellido), se usa como término de búsqueda
+                    raw_n = alias_target.upper()
             
             if not exact_match:
                 # 2. Buscar candidatos en BUK que contengan la subcadena
