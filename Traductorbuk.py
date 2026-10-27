@@ -111,7 +111,7 @@ def build_shift_dictionary(xls_file):
 
 def convert_time_to_buk_sigla(val, shift_map):
     """
-    Convierte un valor de horario/texto a Sigla BUK.
+    Convierte un valor de horario/texto a Sigla BUK de forma robusta.
     Retorna (sigla, es_desconocido)
     """
     if pd.isna(val):
@@ -119,38 +119,48 @@ def convert_time_to_buk_sigla(val, shift_map):
     
     clean_val = str(val).strip().upper()
     
-    # Reglas de Negocio Específicas
+    # 1. Reglas directas de negocio
     if clean_val in ['LIBRE', 'L', 'DM', 'SG', 'SIN GOCE']:
         return 'L', False  # Libres, DM y SG quedan como 'L'
     if clean_val in ['COMPENSADO', 'C']:
         return 'C', False  # Compensado queda como 'C'
     if clean_val in ['LICENCIA', 'LIC']:
-        return 'BASE', False  # Licencia previamente ingresada en BUK
+        return 'L', False  # Licencia previamente ingresada en BUK
     if clean_val in ['VACACION', 'VACACIONES', 'V']:
-        return 'BASE', False  # Vacaciones previamente ingresadas en BUK
-    if clean_val in ['BASE', 'TURNO BASE']:
+        return 'V', False  # Vacaciones previamente ingresadas en BUK
+    if clean_val in ['BASE', 'TURNO BASE', '-', '']:
         return 'BASE', False
 
-    # Limpiar espacios internos (ej: "10:30 - 18:30" -> "10:30-18:30")
-    clean_val = clean_val.replace(" ", "")
-    
-    if '-' in clean_val:
-        parts = clean_val.split('-')
-        if len(parts) == 2:
-            def norm_hhmm(t):
-                tp = t.split(':')
-                if len(tp) == 2:
-                    return f"{int(tp[0]):02d}:{int(tp[1]):02d}"
-                return t
-            p1, p2 = norm_hhmm(parts[0]), norm_hhmm(parts[1])
+    # 2. Extracción limpia de rangos de hora usando Regex
+    # Tolera saltos de línea, números de horas abajo (7, 7.5), puntos o dos puntos
+    times = re.findall(r'(\d{1,2})[:.](\d{2})', clean_val)
+    if len(times) >= 2:
+        try:
+            h1, m1 = int(times[0][0]), int(times[0][1])
+            h2, m2 = int(times[1][0]), int(times[1][1])
+            p1 = f"{h1:02d}:{m1:02d}"
+            p2 = f"{h2:02d}:{m2:02d}"
             key = f"{p1}-{p2}"
             if key in shift_map:
                 return shift_map[key], False
             else:
-                return clean_val, True
+                return key, True
+        except Exception:
+            pass
+
+    # 3. Búsqueda por palabras clave si no se detectaron horas
+    for libre_kw in ['LIBRE', 'DM', 'SG']:
+        if libre_kw in clean_val:
+            return 'L', False
+    if 'COMPENSADO' in clean_val:
+        return 'C', False
+    if 'LICENCIA' in clean_val:
+        return 'L', False
+    if 'VACACION' in clean_val:
+        return 'V', False
 
     return clean_val, True
-
+    
 def process_image_with_gemini(image_bytes, api_key):
     """Envía la imagen a Gemini Vision API y retorna una lista de dicts estructurados incluyendo la sección/área."""
     if not HAS_GEMINI:
@@ -180,8 +190,8 @@ def process_image_with_gemini(image_bytes, api_key):
     ]
 
     Reglas de extracción:
+    - IMPORTANTE: Extrae SOLAMENTE el rango horario (ej. '19:00-02:30'). Ignora por completo el número de horas trabajadas que aparece debajo (ignora '7', '8', '7,5', etc.).
     - Identifica la sección o subtítulo donde aparece el trabajador (ej. "BARTENDERS", "GARZONES", "RUNNER", "NIKKEI", "FRIO", "PIZZAS", "CALIENTE", "PRODUCCION", "COOPERIA").
-    - Conserva las horas de entrada y salida exactas ej "19:00-02:30", "09:30-18:00", "18:30-02:30", "10:30 - 18:30".
     - Para días sin turno o descansos escribe "LIBRE", "DM", "SG", "LICENCIA" o "COMPENSADO" según corresponda.
     - Captura a todos los trabajadores listados en las imágenes.
     """
