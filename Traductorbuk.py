@@ -459,17 +459,51 @@ if buk_file is not None:
         if duplicates:
             st.error(f"⚠️ **Alerta de Duplicados:** Hay colaboradores asignados más de una vez: {', '.join(duplicates)}. Por favor verifica los nombres resueltos arriba.")
 
-        # ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
         # GENERACIÓN Y EXPORTACIÓN DEL ARCHIVO FINAL BUK
         # ---------------------------------------------------------------------
         st.divider()
+        st.subheader("📤 Opciones de Exportación para BUK")
+        
+        modo_exportacion = st.radio(
+            "Selecciona qué colaboradores incluir en el archivo final:",
+            [
+                "Solo colaboradores del cuadrante semanal (Recomendado: Evita error de egreso)",
+                "Todos los colaboradores de la plantilla BUK"
+            ]
+        )
+
+        nombres_a_excluir = []
+        if modo_exportacion == "Todos los colaboradores de la plantilla BUK":
+            # Permite desmarcar extrabajadores o personal con fecha de egreso
+            nombres_no_planificados = [n for n in nombres_buk_oficiales if n not in [e[0] for e in mapped_entries]]
+            nombres_a_excluir = st.multiselect(
+                "Selecciona colaboradores egresados o inactivos para NO asignarles turnos:",
+                options=nombres_no_planificados,
+                help="Estos colaboradores quedarán con celdas vacías para no generar conflicto con su fecha de egreso."
+            )
+
         if st.button("🚀 Generar y Exportar Planilla BUK Final"):
-            resultado_buk = tc_df.copy()
-            
+            # 1. Definir base de datos según el modo seleccionado
+            if modo_exportacion == "Solo colaboradores del cuadrante semanal (Recomendado: Evita error de egreso)":
+                nombres_activos = list(set([e[0] for e in mapped_entries]))
+                resultado_buk = tc_df[tc_df['Nombre del Colaborador'].isin(nombres_activos)].copy()
+            else:
+                resultado_buk = tc_df.copy()
+
+            # 2. Inicializar columnas de fecha
             for fecha_col in columnas_fechas_buk:
                 if fecha_col not in resultado_buk.columns:
                     resultado_buk[fecha_col] = 'BASE'
 
+            # 3. Vaciar turnos de colaboradores egresados/excluidos
+            if nombres_a_excluir:
+                for n_exc in nombres_a_excluir:
+                    idx_exc = resultado_buk[resultado_buk['Nombre del Colaborador'] == n_exc].index
+                    for fecha_col in columnas_fechas_buk:
+                        resultado_buk.loc[idx_exc, fecha_col] = None
+
+            # 4. Asignar los turnos leídos del cuadrante
             for buk_name, schedule_obj in mapped_entries:
                 if buk_name in resultado_buk['Nombre del Colaborador'].values:
                     idx = resultado_buk[resultado_buk['Nombre del Colaborador'] == buk_name].index[0]
@@ -484,7 +518,7 @@ if buk_file is not None:
                             
                         resultado_buk.at[idx, columnas_fechas_buk[idx_d]] = sigla
 
-            st.success("¡Planilla generada con éxito!")
+            st.success(f"¡Planilla generada con éxito con {len(resultado_buk)} colaboradores!")
             st.dataframe(resultado_buk[['Nombre del Colaborador', 'RUT', 'Área'] + columnas_fechas_buk], use_container_width=True)
 
             output_bytes = io.BytesIO()
