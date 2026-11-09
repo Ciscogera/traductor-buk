@@ -111,7 +111,7 @@ def build_shift_dictionary(xls_file):
 
 def convert_time_to_buk_sigla(val, shift_map):
     """
-    Convierte un valor de horario/texto a Sigla BUK de forma robusta.
+    Convierte un valor de horario/texto a Sigla BUK.
     Retorna (sigla, es_desconocido)
     """
     if pd.isna(val):
@@ -119,66 +119,71 @@ def convert_time_to_buk_sigla(val, shift_map):
     
     clean_val = str(val).strip().upper()
     
-    # 1. Reglas directas de negocio
+    # Reglas de Negocio Específicas
     if clean_val in ['LIBRE', 'L', 'DM', 'SG', 'SIN GOCE']:
         return 'L', False  # Libres, DM y SG quedan como 'L'
     if clean_val in ['COMPENSADO', 'C']:
         return 'C', False  # Compensado queda como 'C'
     if clean_val in ['LICENCIA', 'LIC']:
-        return 'L', False  # Licencia previamente ingresada en BUK
+        return 'BASE', False  # Licencia previamente ingresada en BUK
     if clean_val in ['VACACION', 'VACACIONES', 'V']:
-        return 'V', False  # Vacaciones previamente ingresadas en BUK
-    if clean_val in ['BASE', 'TURNO BASE', '-', '']:
+        return 'BASE', False  # Vacaciones previamente ingresadas en BUK
+    if clean_val in ['BASE', 'TURNO BASE']:
         return 'BASE', False
 
-    # 2. Extracción limpia de rangos de hora usando Regex
-    # Tolera saltos de línea, números de horas abajo (7, 7.5), puntos o dos puntos
-    times = re.findall(r'(\d{1,2})[:.](\d{2})', clean_val)
-    if len(times) >= 2:
-        try:
-            h1, m1 = int(times[0][0]), int(times[0][1])
-            h2, m2 = int(times[1][0]), int(times[1][1])
-            p1 = f"{h1:02d}:{m1:02d}"
-            p2 = f"{h2:02d}:{m2:02d}"
+    # Limpiar espacios internos (ej: "10:30 - 18:30" -> "10:30-18:30")
+    clean_val = clean_val.replace(" ", "")
+    
+    if '-' in clean_val:
+        parts = clean_val.split('-')
+        if len(parts) == 2:
+            def norm_hhmm(t):
+                tp = t.split(':')
+                if len(tp) == 2:
+                    return f"{int(tp[0]):02d}:{int(tp[1]):02d}"
+                return t
+            p1, p2 = norm_hhmm(parts[0]), norm_hhmm(parts[1])
             key = f"{p1}-{p2}"
             if key in shift_map:
                 return shift_map[key], False
             else:
-                return key, True
-        except Exception:
-            pass
-
-    # 3. Búsqueda por palabras clave si no se detectaron horas
-    for libre_kw in ['LIBRE', 'DM', 'SG']:
-        if libre_kw in clean_val:
-            return 'L', False
-    if 'COMPENSADO' in clean_val:
-        return 'C', False
-    if 'LICENCIA' in clean_val:
-        return 'L', False
-    if 'VACACION' in clean_val:
-        return 'V', False
+                return clean_val, True
 
     return clean_val, True
-    
-def process_image_with_gemini(image_bytes, api_key):
-    """Envía la imagen a Gemini Vision API y retorna una lista de dicts estructurados incluyendo la sección/área."""
+
+def process_image_with_gemini(image_bytes, api_key, area_context=None):
+    """
+    Envía la imagen a Gemini Vision API indicando la regla de posición espacial:
+    - Eje superior = GARZONES
+    - Eje inferior = RUNNERS
+    """
     if not HAS_GEMINI:
-        st.error("Librería `google-generativeai` no instalada. Instálala con: `pip install google-generativeai`")
+        st.error("Libreria google-generativeai no instalada.")
         return None
     
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-3.5-flash-lite')
+    model = genai.GenerativeModel('gemini-3.5-flash')
     
-    prompt = """
-    Analiza esta imagen que contiene un cuadrante de horarios de personal de restaurant/bar.
-    Extrae la lista de todos los colaboradores con sus respectivos turnos de Lunes a Domingo y la sección/área en la que están ubicados.
+    prompt = f"""
+    Analiza esta imagen que contiene un cuadrante de horarios de personal.
+    Contexto de área seleccionada por el usuario: {area_context if area_context else 'No especificado (determinar por imagen)'}.
+
+    REGLAS DE DISTRIBUCION ESPACIAL PARA SALON:
+    - En planillas de Salón, la tabla esta dividida horizontalmente en dos bloques principales por una franja o eje divisor:
+      1. BLOQUE SUPERIOR (arriba del eje): Corresponde estrictamente al cargo "GARZON".
+      2. BLOQUE INFERIOR (abajo del eje): Corresponde estrictamente al cargo "RUNNER".
+    - Aunque la imagen no tenga escrita la palabra "GARZON" o "RUNNER" como encabezado, clasifica a cada colaborador segun su posicion vertical respecto a este eje.
+
+    REGLAS DE EXTRACCION:
+    - Extrae SOLAMENTE el rango horario (ej. '19:00-02:30', '10:30-18:30'). Ignora por completo el total de horas que aparece debajo (ignora '7', '8', '7,5', etc.).
+    - Para descansos o ausencias escribe 'LIBRE', 'DM', 'SG', 'LICENCIA' o 'COMPENSADO'.
     
-    Retorna ÚNICAMENTE un objeto JSON válido con la siguiente estructura (sin Markdown de código adicional):
+    Retorna UNICAMENTE un arreglo JSON valido con esta estructura:
     [
-      {
-        "nombre": "JESUS",
-        "seccion": "GARZONES",
+      {{
+        "nombre": "NOMBRE DETECTADO",
+        "seccion": "SALON",
+        "cargo": "GARZON",
         "lunes": "19:00-02:30",
         "martes": "LIBRE",
         "miercoles": "19:00-02:30",
@@ -186,14 +191,8 @@ def process_image_with_gemini(image_bytes, api_key):
         "viernes": "19:00-02:30",
         "sabado": "19:00-02:30",
         "domingo": "13:00-20:30"
-      }
+      }}
     ]
-
-    Reglas de extracción:
-    - IMPORTANTE: Extrae SOLAMENTE el rango horario (ej. '19:00-02:30'). Ignora por completo el número de horas trabajadas que aparece debajo (ignora '7', '8', '7,5', etc.).
-    - Identifica la sección o subtítulo donde aparece el trabajador (ej. "BARTENDERS", "GARZONES", "RUNNER", "NIKKEI", "FRIO", "PIZZAS", "CALIENTE", "PRODUCCION", "COOPERIA").
-    - Para días sin turno o descansos escribe "LIBRE", "DM", "SG", "LICENCIA" o "COMPENSADO" según corresponda.
-    - Captura a todos los trabajadores listados en las imágenes.
     """
     
     try:
@@ -204,8 +203,7 @@ def process_image_with_gemini(image_bytes, api_key):
         text_resp = response.text.strip()
         text_resp = re.sub(r'```json\s*', '', text_resp)
         text_resp = re.sub(r'```\s*$', '', text_resp)
-        parsed_data = json.loads(text_resp)
-        return parsed_data
+        return json.loads(text_resp)
     except Exception as e:
         st.error(f"Error procesando la imagen con IA Vision: {e}")
         return None
@@ -271,22 +269,109 @@ if buk_file is not None:
     raw_schedules = []
     
     if metodo == "Imágenes de Cuadrantes (Visión IA)":
-        uploaded_images = st.file_uploader("Sube una o varias imágenes de los horarios (.jpg, .jpeg, .png)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-        
-        if uploaded_images:
-            if not gemini_api_key:
-                st.warning("⚠️ Ingresa tu API Key de Gemini en el panel lateral para procesar las imágenes.")
+        st.markdown("Sube las imágenes según el área correspondiente para asegurar la correcta asignación de homónimos (por ejemplo, Diego de Salón vs. Diego de Barra):")
+
+        tab_barra, tab_salon, tab_cocina, tab_general = st.tabs([
+            "Barra",
+            "Salón (Garzones / Runners)",
+            "Cocina / Producción",
+            "General (Imágenes con encabezados)"
+        ])
+
+        with tab_barra:
+            uploaded_barra = st.file_uploader(
+                "Imágenes de Barra", 
+                type=["jpg", "jpeg", "png"], 
+                accept_multiple_files=True, 
+                key="up_barra"
+            )
+
+        with tab_salon:
+            st.markdown("**Carga de Salón:** Puedes subir la imagen completa (la IA detectará el bloque superior como Garzones y el inferior como Runners) o cargar fotos recortadas por separado.")
+            
+            tipo_carga_salon = st.radio(
+                "Modalidad de imagen para Salón:",
+                ["Imagen completa de Salón (Bloque superior Garzones / Inferior Runners)", "Imágenes recortadas por cargo"],
+                horizontal=True
+            )
+
+            if tipo_carga_salon == "Imagen completa de Salón (Bloque superior Garzones / Inferior Runners)":
+                uploaded_salon_completo = st.file_uploader(
+                    "Subir imagen completa de Salón", 
+                    type=["jpg", "jpeg", "png"], 
+                    accept_multiple_files=True, 
+                    key="up_salon_comp"
+                )
+                uploaded_garzones = []
+                uploaded_runners = []
             else:
-                if st.button("🔍 Leer y Analizar Imágenes con IA"):
+                col_g, col_r = st.columns(2)
+                with col_g:
+                    uploaded_garzones = st.file_uploader(
+                        "Bloque Garzones (Superior)", 
+                        type=["jpg", "jpeg", "png"], 
+                        accept_multiple_files=True, 
+                        key="up_garz"
+                    )
+                with col_r:
+                    uploaded_runners = st.file_uploader(
+                        "Bloque Runners (Inferior)", 
+                        type=["jpg", "jpeg", "png"], 
+                        accept_multiple_files=True, 
+                        key="up_runn"
+                    )
+                uploaded_salon_completo = []
+
+            uploaded_salon = uploaded_salon_completo + uploaded_garzones + uploaded_runners
+
+        with tab_cocina:
+            uploaded_cocina = st.file_uploader(
+                "Imágenes de Cocina", 
+                type=["jpg", "jpeg", "png"], 
+                accept_multiple_files=True, 
+                key="up_cocina"
+            )
+
+        with tab_general:
+            uploaded_general = st.file_uploader(
+                "Imágenes Mixtas / Con encabezado visible", 
+                type=["jpg", "jpeg", "png"], 
+                accept_multiple_files=True, 
+                key="up_general"
+            )
+
+        # Agrupar las cargas asociando su área forzada
+        lotes_carga = [
+            (uploaded_barra, "BARRA"),
+            (uploaded_salon, "SALON"),
+            (uploaded_cocina, "COCINA"),
+            (uploaded_general, None)  # El área la detectará la IA directamente de la imagen
+        ]
+
+        total_archivos = sum(len(archivos) for archivos, _ in lotes_carga if archivos)
+
+        if total_archivos > 0:
+            if not gemini_api_key:
+                st.warning("Ingresa tu API Key de Gemini en el panel lateral para procesar las imágenes.")
+            else:
+                if st.button("Leer y Analizar Todas las Imágenes"):
                     with st.spinner("Procesando imágenes con IA Vision..."):
                         all_extracted = []
-                        for img_file in uploaded_images:
-                            img_bytes = img_file.read()
-                            extracted = process_image_with_gemini(img_bytes, gemini_api_key)
-                            if extracted:
-                                all_extracted.extend(extracted)
+                        for archivos, area_forzada in lotes_carga:
+                            if not archivos:
+                                continue
+                            for img_file in archivos:
+                                img_bytes = img_file.read()
+                                extracted = process_image_with_gemini(img_bytes, gemini_api_key)
+                                if extracted:
+                                    for item in extracted:
+                                        # Si se subió en una pestaña específica, se asigna su área directamente
+                                        if area_forzada:
+                                            item["seccion"] = area_forzada
+                                    all_extracted.extend(extracted)
+
                         st.session_state['extracted_schedules'] = all_extracted
-                        st.success(f"¡Extracción exitosa! Se detectaron {len(all_extracted)} trabajadores.")
+                        st.success(f"Extracción completada: se detectaron {len(all_extracted)} registros.")
 
         if 'extracted_schedules' in st.session_state:
             raw_schedules = st.session_state['extracted_schedules']
@@ -459,51 +544,17 @@ if buk_file is not None:
         if duplicates:
             st.error(f"⚠️ **Alerta de Duplicados:** Hay colaboradores asignados más de una vez: {', '.join(duplicates)}. Por favor verifica los nombres resueltos arriba.")
 
-# ---------------------------------------------------------------------
+        # ---------------------------------------------------------------------
         # GENERACIÓN Y EXPORTACIÓN DEL ARCHIVO FINAL BUK
         # ---------------------------------------------------------------------
         st.divider()
-        st.subheader("📤 Opciones de Exportación para BUK")
-        
-        modo_exportacion = st.radio(
-            "Selecciona qué colaboradores incluir en el archivo final:",
-            [
-                "Solo colaboradores del cuadrante semanal (Recomendado: Evita error de egreso)",
-                "Todos los colaboradores de la plantilla BUK"
-            ]
-        )
-
-        nombres_a_excluir = []
-        if modo_exportacion == "Todos los colaboradores de la plantilla BUK":
-            # Permite desmarcar extrabajadores o personal con fecha de egreso
-            nombres_no_planificados = [n for n in nombres_buk_oficiales if n not in [e[0] for e in mapped_entries]]
-            nombres_a_excluir = st.multiselect(
-                "Selecciona colaboradores egresados o inactivos para NO asignarles turnos:",
-                options=nombres_no_planificados,
-                help="Estos colaboradores quedarán con celdas vacías para no generar conflicto con su fecha de egreso."
-            )
-
         if st.button("🚀 Generar y Exportar Planilla BUK Final"):
-            # 1. Definir base de datos según el modo seleccionado
-            if modo_exportacion == "Solo colaboradores del cuadrante semanal (Recomendado: Evita error de egreso)":
-                nombres_activos = list(set([e[0] for e in mapped_entries]))
-                resultado_buk = tc_df[tc_df['Nombre del Colaborador'].isin(nombres_activos)].copy()
-            else:
-                resultado_buk = tc_df.copy()
-
-            # 2. Inicializar columnas de fecha
+            resultado_buk = tc_df.copy()
+            
             for fecha_col in columnas_fechas_buk:
                 if fecha_col not in resultado_buk.columns:
                     resultado_buk[fecha_col] = 'BASE'
 
-            # 3. Vaciar turnos de colaboradores egresados/excluidos
-            if nombres_a_excluir:
-                for n_exc in nombres_a_excluir:
-                    idx_exc = resultado_buk[resultado_buk['Nombre del Colaborador'] == n_exc].index
-                    for fecha_col in columnas_fechas_buk:
-                        resultado_buk.loc[idx_exc, fecha_col] = None
-
-            # 4. Asignar los turnos leídos del cuadrante
             for buk_name, schedule_obj in mapped_entries:
                 if buk_name in resultado_buk['Nombre del Colaborador'].values:
                     idx = resultado_buk[resultado_buk['Nombre del Colaborador'] == buk_name].index[0]
@@ -518,7 +569,7 @@ if buk_file is not None:
                             
                         resultado_buk.at[idx, columnas_fechas_buk[idx_d]] = sigla
 
-            st.success(f"¡Planilla generada con éxito con {len(resultado_buk)} colaboradores!")
+            st.success("¡Planilla generada con éxito!")
             st.dataframe(resultado_buk[['Nombre del Colaborador', 'RUT', 'Área'] + columnas_fechas_buk], use_container_width=True)
 
             output_bytes = io.BytesIO()
