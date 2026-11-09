@@ -342,32 +342,35 @@ if buk_file is not None:
 
         # Agrupar las cargas asociando su área forzada
         lotes_carga = [
-            (uploaded_barra, "BARRA"),
-            (uploaded_salon, "SALON"),
-            (uploaded_cocina, "COCINA"),
-            (uploaded_general, None)  # El área la detectará la IA directamente de la imagen
+            (uploaded_barra, "BARRA", "BARTENDER"),
+            (uploaded_cocina, "COCINA", "COCINA"),
+            (uploaded_salon_completo, "SALON", None),          # La IA aplica la regla espacial
+            (uploaded_garzones, "SALON", "GARZON"),            # Forzado si fue recorte
+            (uploaded_runners, "SALON", "RUNNER"),             # Forzado si fue recorte
+            (uploaded_general, None, None)
         ]
 
-        total_archivos = sum(len(archivos) for archivos, _ in lotes_carga if archivos)
+        total_archivos = sum(len(archivos) for archivos, _, _ in lotes_carga if archivos)
 
         if total_archivos > 0:
             if not gemini_api_key:
-                st.warning("Ingresa tu API Key de Gemini en el panel lateral para procesar las imágenes.")
+                st.warning("Ingresa tu API Key de Gemini en el panel lateral.")
             else:
                 if st.button("Leer y Analizar Todas las Imágenes"):
                     with st.spinner("Procesando imágenes con IA Vision..."):
                         all_extracted = []
-                        for archivos, area_forzada in lotes_carga:
+                        for archivos, area_f, cargo_f in lotes_carga:
                             if not archivos:
                                 continue
                             for img_file in archivos:
                                 img_bytes = img_file.read()
-                                extracted = process_image_with_gemini(img_bytes, gemini_api_key)
+                                extracted = process_image_with_gemini(img_bytes, gemini_api_key, area_context=area_f)
                                 if extracted:
                                     for item in extracted:
-                                        # Si se subió en una pestaña específica, se asigna su área directamente
-                                        if area_forzada:
-                                            item["seccion"] = area_forzada
+                                        if area_f:
+                                            item["seccion"] = area_f
+                                        if cargo_f:
+                                            item["cargo"] = cargo_f
                                     all_extracted.extend(extracted)
 
                         st.session_state['extracted_schedules'] = all_extracted
