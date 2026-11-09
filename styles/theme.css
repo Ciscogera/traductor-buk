@@ -1,0 +1,186 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Syne:wght@700;800&display=swap');
+
+:root {
+    --bg-deep: #0D0E11;
+    --surface-base: #14161B;
+    --surface-raised: #1C1F26;
+    --surface-overlay: #232730;
+    --border-subtle: rgba(255, 255, 255, 0.06);
+    --border-medium: rgba(255, 255, 255, 0.12);
+    --border-accent: rgba(224, 169, 109, 0.35);
+    --accent-amber: #e06d73;
+    --accent-amber-glow: rgba(224, 169, 109, 0.12);
+    --status-error-bg: rgba(220, 76, 100, 0.08);
+    --status-error-border: rgba(220, 76, 76, 0.28);
+    --status-error-text: #F28B99;
+    --status-warn-bg: rgba(224, 169, 109, 0.08);
+    --status-warn-border: rgba(255, 0, 0, 0.28);
+    --status-warn-text: #F3C28D;
+    --status-ok-bg: rgba(82, 183, 136, 0.08);
+    --status-ok-border: rgba(82, 183, 136, 0.28);
+    --status-ok-text: #74C69D;
+    --text-primary: #EDECE8;
+    --text-secondary: #9BA1A6;
+    --text-muted: #636A73;
+}
+
+body, .stApp {
+    background-color: var(--bg-deep) !important;
+    color: var(--text-primary) !important;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+/* Cabecera Táctica */
+.header-container {
+    padding: 1.5rem 0 1.25rem 0;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border-medium);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+}
+
+.header-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 1.6rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    margin: 0.3rem 0 0 0;
+}
+
+.header-subtitle {
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    margin: 0.25rem 0 0 0;
+}
+
+/* Grilla Bento de Telemetría */
+.telemetry-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.85rem;
+    margin-bottom: 1.5rem;
+}
+
+.telemetry-card {
+    background: linear-gradient(180deg, var(--surface-raised) 0%, var(--surface-base) 100%);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 1rem;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.telemetry-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    letter-spacing: 0.05em;
+}
+
+.telemetry-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-top: 0.35rem;
+}
+
+/* Tarjetas de Especificación de Área */
+.area-spec-box {
+    background: var(--surface-base);
+    border: 1px solid var(--border-medium);
+    border-left: 3px solid var(--accent-amber);
+    border-radius: 6px;
+    padding: 0.85rem 1.15rem;
+    margin-bottom: 1rem;
+}
+
+.area-spec-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.area-spec-desc {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    margin-top: 0.25rem;
+    line-height: 1.4;
+}
+
+/* Avisos Técnicos y Diagnósticos */
+.notice-box {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem;
+    border-radius: 6px;
+    margin: 0.75rem 0;
+    font-size: 0.85rem;
+    line-height: 1.45;
+}
+
+.notice-box.warning {
+    background: var(--status-warn-bg);
+    border: 1px solid var(--status-warn-border);
+    color: var(--status-warn-text);
+}
+
+.notice-box.error {
+    background: var(--status-error-bg);
+    border: 1px solid var(--status-error-border);
+    color: var(--status-error-text);
+}
+
+.notice-box.success {
+    background: var(--status-ok-bg);
+    border: 1px solid var(--status-ok-border);
+    color: var(--status-ok-text);
+}
+
+.notice-icon {
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+}
+
+/* Badges y Micro-etiquetas */
+.badge-mono {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    padding: 0.2rem 0.55rem;
+    border-radius: 4px;
+    letter-spacing: 0.03em;
+    border: 1px solid var(--border-medium);
+    background: var(--surface-overlay);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+}
+
+.badge-accent {
+    border-color: var(--border-accent);
+    background: var(--accent-amber-glow);
+    color: var(--accent-amber);
+}
+
+/* Botones Operativos */
+.stButton > button {
+    background: linear-gradient(180deg, #E8B983 0%, #C99052 100%) !important;
+    color: #121316 !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.04em !important;
+    font-size: 0.82rem !important;
+    text-transform: uppercase !important;
+    border: 1px solid #F5D3A9 !important;
+    border-radius: 6px !important;
+    padding: 0.65rem 1.3rem !important;
+    box-shadow: 0 4px 14px rgba(224, 169, 109, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.stButton > button:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 6px 20px rgba(224, 169, 109, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.4) !important;
+}
