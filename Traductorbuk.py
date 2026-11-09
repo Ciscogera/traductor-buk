@@ -6,7 +6,18 @@ import re
 import json
 import difflib
 
-# Cargar librería de Gemini si está disponible
+# Modulos de diseno desacoplados
+from utils.ui import (
+    load_custom_css,
+    render_header,
+    render_telemetry,
+    render_area_spec,
+    render_queue_status,
+    render_preview_metrics,
+    render_notice,
+    get_svg_icon
+)
+
 try:
     import google.generativeai as genai
     HAS_GEMINI = True
@@ -14,24 +25,24 @@ except ImportError:
     HAS_GEMINI = False
 
 # -----------------------------------------------------------------------------
-# CONFIGURACIÓN DE PÁGINA
+# CONFIGURACION DE PAGINA Y ESTILOS
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Traductor de Horarios BUK - Bar El Bajo",
-    page_icon="🍹",
-    layout="wide"
+    page_title="Traductor de Cuadrantes · Bar El Bajo",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-st.title("🍹 Carga Masiva de Horarios a BUK - Bar El Bajo")
-st.markdown("""
-Esta aplicación procesa imágenes de los cuadrantes semanales de turnos (vía **IA Vision**) 
-o archivos de datos, traduciéndolos al **formato exacto exigido por BUK** (`ReporteTurnosColaboradores.xls`).
-""")
+load_custom_css("styles/theme.css")
+
+render_header(
+    title="Traductor de Turnos BUK",
+    subtitle="Procesamiento automatizado de cuadrantes semanales mediante Vision Artificial",
+    tag="Bar El Bajo · Ops"
+)
 
 # -----------------------------------------------------------------------------
-# DICCIONARIOS DE HOMOLOGACIÓN Y ALIAS PREDEFINIDOS
-# (Nota: Se omiten nombres ambiguos de pila única como JESUS, DIEGO, CARLOS, etc.
-#  para que la app use el filtro de Área o pida confirmación mediante menú desplegable).
+# DICCIONARIO DE ALIAS OPERATIVOS
 # -----------------------------------------------------------------------------
 ALIAS_PREDEFINIDOS = {
     "FRAN(CISCO)": "FRANCISCO IGNACIO GUERRA GALLARDO",
@@ -71,11 +82,10 @@ ALIAS_PREDEFINIDOS = {
 }
 
 # -----------------------------------------------------------------------------
-# FUNCIONES AUXILIARES DE CONVERSIÓN Y PROCESAMIENTO
+# FUNCIONES AUXILIARES DE PROCESAMIENTO
 # -----------------------------------------------------------------------------
-
 def normalize_area(section_str):
-    """Mapea el nombre de sección/área del cuadrante al Área oficial de BUK (BARRA, SALON, COCINA)."""
+    """Mapea el area detectada a la nomenclatura oficial de BUK."""
     if not section_str:
         return None
     sec = str(section_str).upper().strip()
@@ -88,7 +98,7 @@ def normalize_area(section_str):
     return None
 
 def build_shift_dictionary(xls_file):
-    """Extrae el mapeo (Entrada-Salida -> Sigla) y la lista de siglas válidas desde turnosSemanales."""
+    """Construye el mapa de Entrada-Salida a Siglas oficiales desde turnosSemanales."""
     try:
         ts_df = pd.read_excel(xls_file, sheet_name='turnosSemanales')
         shift_map = {}
@@ -106,32 +116,27 @@ def build_shift_dictionary(xls_file):
         
         return shift_map, sorted(list(all_siglas))
     except Exception as e:
-        st.error(f"Error al leer la hoja 'turnosSemanales': {e}")
+        render_notice("error", "Error de lectura", f"No se pudo procesar la hoja turnosSemanales ({e})")
         return {}, []
 
 def convert_time_to_buk_sigla(val, shift_map):
-    """
-    Convierte un valor de horario/texto a Sigla BUK.
-    Retorna (sigla, es_desconocido)
-    """
+    """Convierte un rango horario o texto a sigla BUK normalizada."""
     if pd.isna(val):
         return 'BASE', False
     
     clean_val = str(val).strip().upper()
     
-    # Reglas de Negocio Específicas
     if clean_val in ['LIBRE', 'L', 'DM', 'SG', 'SIN GOCE']:
-        return 'L', False  # Libres, DM y SG quedan como 'L'
+        return 'L', False
     if clean_val in ['COMPENSADO', 'C']:
-        return 'C', False  # Compensado queda como 'C'
+        return 'C', False
     if clean_val in ['LICENCIA', 'LIC']:
-        return 'BASE', False  # Licencia previamente ingresada en BUK
+        return 'BASE', False
     if clean_val in ['VACACION', 'VACACIONES', 'V']:
-        return 'BASE', False  # Vacaciones previamente ingresadas en BUK
+        return 'BASE', False
     if clean_val in ['BASE', 'TURNO BASE']:
         return 'BASE', False
 
-    # Limpiar espacios internos (ej: "10:30 - 18:30" -> "10:30-18:30")
     clean_val = clean_val.replace(" ", "")
     
     if '-' in clean_val:
@@ -152,13 +157,9 @@ def convert_time_to_buk_sigla(val, shift_map):
     return clean_val, True
 
 def process_image_with_gemini(image_bytes, api_key, area_context=None):
-    """
-    Envía la imagen a Gemini Vision API indicando la regla de posición espacial:
-    - Eje superior = GARZONES
-    - Eje inferior = RUNNERS
-    """
+    """Inferencia espacial con Gemini Vision Flash."""
     if not HAS_GEMINI:
-        st.error("Libreria google-generativeai no instalada.")
+        render_notice("error", "Dependencia faltante", "Libreria google-generativeai no instalada")
         return None
     
     genai.configure(api_key=api_key)
@@ -166,17 +167,17 @@ def process_image_with_gemini(image_bytes, api_key, area_context=None):
     
     prompt = f"""
     Analiza esta imagen que contiene un cuadrante de horarios de personal.
-    Contexto de área seleccionada por el usuario: {area_context if area_context else 'No especificado (determinar por imagen)'}.
+    Contexto de área seleccionada: {area_context if area_context else 'Determinar por imagen'}.
 
     REGLAS DE DISTRIBUCION ESPACIAL PARA SALON:
-    - En planillas de Salón, la tabla esta dividida horizontalmente en dos bloques principales por una franja o eje divisor:
-      1. BLOQUE SUPERIOR (arriba del eje): Corresponde estrictamente al cargo "GARZON".
-      2. BLOQUE INFERIOR (abajo del eje): Corresponde estrictamente al cargo "RUNNER".
-    - Aunque la imagen no tenga escrita la palabra "GARZON" o "RUNNER" como encabezado, clasifica a cada colaborador segun su posicion vertical respecto a este eje.
+    - En planillas de Salón, la tabla esta dividida horizontalmente en dos bloques:
+      1. BLOQUE SUPERIOR: Cargo 'GARZON'.
+      2. BLOQUE INFERIOR: Cargo 'RUNNER'.
+    - Clasifica a cada colaborador segun su posicion vertical respecto a este eje divisor.
 
     REGLAS DE EXTRACCION:
-    - Extrae SOLAMENTE el rango horario (ej. '19:00-02:30', '10:30-18:30'). Ignora por completo el total de horas que aparece debajo (ignora '7', '8', '7,5', etc.).
-    - Para descansos o ausencias escribe 'LIBRE', 'DM', 'SG', 'LICENCIA' o 'COMPENSADO'.
+    - Extrae SOLAMENTE el rango horario (ej. '19:00-02:30', '10:30-18:30'). Ignora horas totales.
+    - Para ausencias o descansos usa 'LIBRE', 'DM', 'SG', 'LICENCIA' o 'COMPENSADO'.
     
     Retorna UNICAMENTE un arreglo JSON valido con esta estructura:
     [
@@ -205,228 +206,204 @@ def process_image_with_gemini(image_bytes, api_key, area_context=None):
         text_resp = re.sub(r'```\s*$', '', text_resp)
         return json.loads(text_resp)
     except Exception as e:
-        st.error(f"Error procesando la imagen con IA Vision: {e}")
+        render_notice("error", "Falla de inferencia", str(e))
         return None
 
 # -----------------------------------------------------------------------------
-# PANEL LATERAL DE CONFIGURACIÓN
+# BARRA LATERAL
 # -----------------------------------------------------------------------------
-st.sidebar.header("⚙️ Configuración")
+st.sidebar.markdown("<span class='badge-mono'>ENTORNO Y CREDENCIALES</span>", unsafe_allow_html=True)
+st.sidebar.markdown("### Configuración")
 
-# 1. Archivo Plantilla BUK
 buk_file = st.sidebar.file_uploader(
-    "1. Plantilla BUK Base (.xls / .xlsx)", 
+    "Plantilla BUK Base (.xls / .xlsx)", 
     type=["xls", "xlsx"],
-    help="Sube el archivo 'ReporteTurnosColaboradores.xls' de BUK"
+    help="Cargue el archivo consolidado ReporteTurnosColaboradores.xls"
 )
 
-# 2. Clave API de Gemini (Manejo Seguro de Secretos)
 secret_key = st.secrets.get("GEMINI_API_KEY", "")
-
 if secret_key:
-    # Si la clave existe en secretos, se usa internamente sin mostrar el texto en pantalla
     gemini_api_key = secret_key
-    st.sidebar.success("🔑 API Key activa (Cargada de forma segura)")
+    render_notice("success", "Credencial Activa", "API Key cargada via secrets.toml")
 else:
-    # Solo si NO hay clave en secrets.toml, se muestra el cuadro para ingresarla manualmente
     gemini_api_key = st.sidebar.text_input(
-        "2. API Key de Gemini (para Imágenes)",
+        "API Key de Gemini",
         type="password",
-        help="Ingresa tu clave si no la tienes configurada en secrets.toml"
+        help="Ingrese clave si no está configurada en secrets"
     )
 
-# 3. Selección de la Fecha del Lunes
-st.sidebar.subheader("3. Rango de Fechas")
-lunes_fecha = st.sidebar.date_input("Selecciona el Lunes de inicio de la semana")
+st.sidebar.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
+st.sidebar.markdown("<span class='badge-mono'>CALENDARIO OPERATIVO</span>", unsafe_allow_html=True)
+lunes_fecha = st.sidebar.date_input("Fecha Lunes de inicio")
 
-# Calcular los 7 días de la semana
 dias_semana = [lunes_fecha + pd.Timedelta(days=i) for i in range(7)]
 columnas_fechas_buk = [d.strftime("%d-%m-%Y") for d in dias_semana]
 dias_keys = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
 
-st.sidebar.info(f"Semana BUK:\n**{columnas_fechas_buk[0]}** al **{columnas_fechas_buk[-1]}**")
+st.sidebar.markdown(f"""
+<div style="background: var(--surface-base); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 0.75rem; margin-top: 0.5rem;">
+    <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase;">Semana BUK</div>
+    <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: var(--text-primary); margin-top: 0.2rem;">
+        {columnas_fechas_buk[0]} &rarr; {columnas_fechas_buk[-1]}
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# FLUJO PRINCIPAL DE LA APLICACIÓN
+# FLUJO PRINCIPAL
 # -----------------------------------------------------------------------------
 if buk_file is not None:
     try:
         xl = pd.ExcelFile(buk_file)
         tc_df = xl.parse('turnosColaboradores')
     except Exception as err:
-        st.error("⚠️ Si obtienes un error con archivos .xls, instala 'xlrd' en tu entorno con `pip install xlrd` o convierte el archivo a .xlsx")
+        render_notice("error", "Error de lectura", "Verifique que el archivo sea un Excel valido o instale xlrd.")
         st.stop()
         
     shift_map, valid_siglas = build_shift_dictionary(buk_file)
     nombres_buk_oficiales = sorted(tc_df['Nombre del Colaborador'].dropna().unique().tolist())
     
-    st.success(f"Plantilla BUK cargada correctamente: **{len(tc_df)} colaboradores** en base de datos.")
+    raw_schedules = st.session_state.get('extracted_schedules', [])
     
-    st.subheader("📸 Entrada de Horarios (Opción A: Imágenes / Opción B: Excel)")
+    render_telemetry(
+        total_buk=len(tc_df),
+        extraidos=len(raw_schedules),
+        ambiguos=st.session_state.get('cant_ambiguos', 0),
+        desconocidos=st.session_state.get('cant_desconocidos', 0)
+    )
     
-    metodo = st.radio("Fuente de los horarios:", ["Imágenes de Cuadrantes (Visión IA)", "Excel / CSV del Cuadrante"])
-    
-    raw_schedules = []
-    
-    if metodo == "Imágenes de Cuadrantes (Visión IA)":
-        st.markdown("Sube las imágenes según el área correspondiente para asegurar la correcta asignación de homónimos (por ejemplo, Diego de Salón vs. Diego de Barra):")
+    st.markdown("<span class='badge-mono badge-accent'>CANAL DE INGRESO</span>", unsafe_allow_html=True)
+    metodo = st.radio(
+        label="Canal de entrada",
+        options=["Imágenes de Cuadrantes (Vision IA)", "Planilla de Datos (Excel / CSV)"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
 
+    if metodo == "Imágenes de Cuadrantes (Vision IA)":
         tab_barra, tab_salon, tab_cocina, tab_general = st.tabs([
             "Barra",
-            "Salón (Garzones / Runners)",
+            "Salón",
             "Cocina / Producción",
-            "General (Imágenes con encabezados)"
+            "Documentos Mixtos"
         ])
 
         with tab_barra:
-            uploaded_barra = st.file_uploader(
-                "Imágenes de Barra", 
-                type=["jpg", "jpeg", "png"], 
-                accept_multiple_files=True, 
-                key="up_barra"
-            )
+            render_area_spec("Área Barra", "Asignacion directa a Bartenders.", "BARRA")
+            uploaded_barra = st.file_uploader("Barra", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="up_barra", label_visibility="collapsed")
 
         with tab_salon:
-            st.markdown("**Carga de Salón:** Puedes subir la imagen completa (la IA detectará el bloque superior como Garzones y el inferior como Runners) o cargar fotos recortadas por separado.")
-            
-            tipo_carga_salon = st.radio(
-                "Modalidad de imagen para Salón:",
-                ["Imagen completa de Salón (Bloque superior Garzones / Inferior Runners)", "Imágenes recortadas por cargo"],
-                horizontal=True
-            )
+            render_area_spec("Regla Espacial de Salón", "Division por franja: Garzones arriba, Runners abajo.", "SALON")
+            tipo_carga_salon = st.radio("Modalidad de carga", ["Pliego completo (Deteccion espacial)", "Recortes separados"], horizontal=True)
 
-            if tipo_carga_salon == "Imagen completa de Salón (Bloque superior Garzones / Inferior Runners)":
-                uploaded_salon_completo = st.file_uploader(
-                    "Subir imagen completa de Salón", 
-                    type=["jpg", "jpeg", "png"], 
-                    accept_multiple_files=True, 
-                    key="up_salon_comp"
-                )
-                uploaded_garzones = []
-                uploaded_runners = []
+            if tipo_carga_salon == "Pliego completo (Deteccion espacial)":
+                uploaded_salon_completo = st.file_uploader("Salón completo", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="up_salon_comp", label_visibility="collapsed")
+                uploaded_garzones, uploaded_runners = [], []
             else:
                 col_g, col_r = st.columns(2)
                 with col_g:
-                    uploaded_garzones = st.file_uploader(
-                        "Bloque Garzones (Superior)", 
-                        type=["jpg", "jpeg", "png"], 
-                        accept_multiple_files=True, 
-                        key="up_garz"
-                    )
+                    st.caption("Bloque Superior: Garzones")
+                    uploaded_garzones = st.file_uploader("Garzones", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="up_garz", label_visibility="collapsed")
                 with col_r:
-                    uploaded_runners = st.file_uploader(
-                        "Bloque Runners (Inferior)", 
-                        type=["jpg", "jpeg", "png"], 
-                        accept_multiple_files=True, 
-                        key="up_runn"
-                    )
+                    st.caption("Bloque Inferior: Runners")
+                    uploaded_runners = st.file_uploader("Runners", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="up_runn", label_visibility="collapsed")
                 uploaded_salon_completo = []
 
-            uploaded_salon = uploaded_salon_completo + uploaded_garzones + uploaded_runners
+            uploaded_salon = (uploaded_salon_completo or []) + (uploaded_garzones or []) + (uploaded_runners or [])
 
         with tab_cocina:
-            uploaded_cocina = st.file_uploader(
-                "Imágenes de Cocina", 
-                type=["jpg", "jpeg", "png"], 
-                accept_multiple_files=True, 
-                key="up_cocina"
-            )
+            render_area_spec("Área Cocina y Producción", "Caliente, Frio, Nikkei, Cooperia y Jefaturas.", "COCINA")
+            uploaded_cocina = st.file_uploader("Cocina", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="up_cocina", label_visibility="collapsed")
 
         with tab_general:
-            uploaded_general = st.file_uploader(
-                "Imágenes Mixtas / Con encabezado visible", 
-                type=["jpg", "jpeg", "png"], 
-                accept_multiple_files=True, 
-                key="up_general"
-            )
+            render_area_spec("Documentos Multizona", "Planillas con encabezados mixtos explicitos.", "MIXTO")
+            uploaded_general = st.file_uploader("Mixtos", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="up_general", label_visibility="collapsed")
 
-        # Agrupar las cargas asociando su área forzada
         lotes_carga = [
             (uploaded_barra, "BARRA", "BARTENDER"),
             (uploaded_cocina, "COCINA", "COCINA"),
-            (uploaded_salon_completo, "SALON", None),          # La IA aplica la regla espacial
-            (uploaded_garzones, "SALON", "GARZON"),            # Forzado si fue recorte
-            (uploaded_runners, "SALON", "RUNNER"),             # Forzado si fue recorte
+            (uploaded_salon_completo, "SALON", None),
+            (uploaded_garzones, "SALON", "GARZON"),
+            (uploaded_runners, "SALON", "RUNNER"),
             (uploaded_general, None, None)
         ]
 
-        total_archivos = sum(len(archivos) for archivos, _, _ in lotes_carga if archivos)
-
-        if total_archivos > 0:
+        conteos_por_area = {
+            "Barra": len(uploaded_barra) if uploaded_barra else 0,
+            "Salón": len(uploaded_salon) if uploaded_salon else 0,
+            "Cocina": len(uploaded_cocina) if uploaded_cocina else 0,
+            "Mixtos": len(uploaded_general) if uploaded_general else 0,
+        }
+        
+        if sum(conteos_por_area.values()) > 0:
+            render_queue_status(conteos_por_area)
+            
             if not gemini_api_key:
-                st.warning("Ingresa tu API Key de Gemini en el panel lateral.")
+                render_notice("warning", "Credencial Requerida", "Ingrese la clave API de Gemini para iniciar.")
             else:
-                if st.button("Leer y Analizar Todas las Imágenes"):
-                    with st.spinner("Procesando imágenes con IA Vision..."):
-                        all_extracted = []
-                        for archivos, area_f, cargo_f in lotes_carga:
-                            if not archivos:
-                                continue
-                            for img_file in archivos:
-                                img_bytes = img_file.read()
-                                extracted = process_image_with_gemini(img_bytes, gemini_api_key, area_context=area_f)
-                                if extracted:
-                                    for item in extracted:
-                                        if area_f:
-                                            item["seccion"] = area_f
-                                        if cargo_f:
-                                            item["cargo"] = cargo_f
-                                    all_extracted.extend(extracted)
+                col_btn, _ = st.columns([1, 2])
+                with col_btn:
+                    if st.button("Iniciar Extracción Visual", use_container_width=True):
+                        with st.spinner("Procesando matriz visual con reglas espaciales..."):
+                            all_extracted = []
+                            for archivos, area_f, cargo_f in lotes_carga:
+                                if not archivos:
+                                    continue
+                                for img_file in archivos:
+                                    img_bytes = img_file.read()
+                                    extracted = process_image_with_gemini(img_bytes, gemini_api_key, area_context=area_f)
+                                    if extracted:
+                                        for item in extracted:
+                                            if area_f:
+                                                item["seccion"] = area_f
+                                            if cargo_f:
+                                                item["cargo"] = cargo_f
+                                        all_extracted.extend(extracted)
 
-                        st.session_state['extracted_schedules'] = all_extracted
-                        st.success(f"Extracción completada: se detectaron {len(all_extracted)} registros.")
+                            st.session_state['extracted_schedules'] = all_extracted
+                            st.rerun()
 
         if 'extracted_schedules' in st.session_state:
             raw_schedules = st.session_state['extracted_schedules']
 
-    else:
-        uploaded_excel = st.file_uploader("Sube la planilla Excel o CSV del cuadrante semanal", type=["xlsx", "xls", "csv"])
+    elif metodo == "Planilla de Datos (Excel / CSV)":
+        uploaded_excel = st.file_uploader("Subir cuadrante (.xlsx / .csv)", type=["xlsx", "xls", "csv"])
         if uploaded_excel:
-            if uploaded_excel.name.endswith('.csv'):
-                df_in = pd.read_csv(uploaded_excel)
-            else:
-                df_in = pd.read_excel(uploaded_excel)
-            
+            df_in = pd.read_csv(uploaded_excel) if uploaded_excel.name.endswith('.csv') else pd.read_excel(uploaded_excel)
             st.dataframe(df_in.head(5), use_container_width=True)
             cols = df_in.columns.tolist()
-            c_nom = st.selectbox("Columna de Nombre del Trabajador:", cols, index=0)
             
-            has_sec_col = st.checkbox("¿El archivo incluye columna de Área/Sección?")
-            c_sec = None
-            if has_sec_col:
-                c_sec = st.selectbox("Columna de Área/Sección:", cols)
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                c_nom = st.selectbox("Columna: Nombre", cols, index=0)
+            with col_m2:
+                has_sec = st.checkbox("Incluye columna de Sección")
+                c_sec = st.selectbox("Columna: Sección", cols) if has_sec else None
 
-            st.markdown("**Asignación de columnas por día:**")
-            c_dias = []
+            st.caption("Asignación de días")
             col_grid = st.columns(7)
             d_names = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-            for i in range(7):
-                def_idx = min(i + 1, len(cols) - 1)
-                cd = col_grid[i].selectbox(d_names[i], cols, index=def_idx, key=f"e_col_{i}")
-                c_dias.append(cd)
+            c_dias = [col_grid[i].selectbox(d_names[i], cols, index=min(i + 1, len(cols) - 1), key=f"ec_{i}") for i in range(7)]
             
-            if st.button("Procesar Cuadrante"):
+            if st.button("Procesar Datos Tabulares"):
                 parsed_list = []
                 for _, r in df_in.iterrows():
-                    item = {
-                        "nombre": str(r[c_nom]).strip(),
-                        "seccion": str(r[c_sec]).strip() if c_sec else ""
-                    }
+                    item = {"nombre": str(r[c_nom]).strip(), "seccion": str(r[c_sec]).strip() if c_sec else ""}
                     for idx_d, dk in enumerate(dias_keys):
                         item[dk] = str(r[c_dias[idx_d]]).strip()
                     parsed_list.append(item)
                 st.session_state['extracted_schedules'] = parsed_list
                 raw_schedules = parsed_list
 
-# -------------------------------------------------------------------------
-    # HOMOLOGACIÓN INTELIGENTE CON FILTRO POR ÁREA Y DETECCIÓN DE AMBIGÜEDAD
+    # -------------------------------------------------------------------------
+    # HOMOLOGACIÓN Y RESOLUCIÓN DE AMBIGÜEDAD
     # -------------------------------------------------------------------------
     if raw_schedules:
-        st.divider()
-        st.subheader("Homologación e Inspección de Datos Extraídos")
+        st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
+        st.markdown("<span class='badge-mono badge-accent'>AUDITORÍA DE ASIGNACIÓN</span>", unsafe_allow_html=True)
         
-        mapped_entries = [] # tuples of (nombre_buk_oficial, schedule_item_dict)
-        unresolved_names = [] # list of (raw_n, section_str, candidate_list, schedule_item_dict)
+        mapped_entries = []
+        unresolved_names = []
         
         for item in raw_schedules:
             raw_n = str(item.get("nombre", "")).strip().upper()
@@ -437,40 +414,30 @@ if buk_file is not None:
                 continue
             
             exact_match = None
-            
-            # 1. Alias predefinido (verificar si existe exactamente en la lista BUK)
             alias_target = ALIAS_PREDEFINIDOS.get(raw_n, None)
             if alias_target:
                 matches_alias = tc_df[tc_df['Nombre del Colaborador'].str.upper() == alias_target.upper()]
                 if not matches_alias.empty:
                     exact_match = matches_alias.iloc[0]['Nombre del Colaborador']
                 else:
-                    # Si el alias no es exacto (ej. falta segundo apellido), se usa como término de búsqueda
                     raw_n = alias_target.upper()
             
             if not exact_match:
-                # 2. Buscar candidatos en BUK que contengan la subcadena
                 candidates_df = tc_df[tc_df['Nombre del Colaborador'].str.upper().str.contains(raw_n, regex=False)]
-                
                 if len(candidates_df) == 1:
                     exact_match = candidates_df.iloc[0]['Nombre del Colaborador']
                 elif len(candidates_df) > 1:
-                    # Aplicar filtro por Área
                     if norm_a:
                         area_filtered = candidates_df[candidates_df['Área'].str.upper() == norm_a]
                         if len(area_filtered) == 1:
                             exact_match = area_filtered.iloc[0]['Nombre del Colaborador']
-                        elif len(area_filtered) > 1:
-                            unresolved_names.append((raw_n, sec_str, area_filtered['Nombre del Colaborador'].tolist(), item))
-                            continue
                         else:
-                            unresolved_names.append((raw_n, sec_str, candidates_df['Nombre del Colaborador'].tolist(), item))
+                            unresolved_names.append((raw_n, sec_str, area_filtered['Nombre del Colaborador'].tolist() if not area_filtered.empty else candidates_df['Nombre del Colaborador'].tolist(), item))
                             continue
                     else:
                         unresolved_names.append((raw_n, sec_str, candidates_df['Nombre del Colaborador'].tolist(), item))
                         continue
                 else:
-                    # 3. Coincidencia difusa (Fuzzy Match)
                     fuzzy = difflib.get_close_matches(raw_n, [n.upper() for n in nombres_buk_oficiales], n=5, cutoff=0.4)
                     if fuzzy:
                         cand_df = tc_df[tc_df['Nombre del Colaborador'].str.upper().isin(fuzzy)]
@@ -491,30 +458,26 @@ if buk_file is not None:
             if exact_match:
                 mapped_entries.append((exact_match, item))
 
-        # Interfaz interactiva para resolver nombres ambiguos o múltiples matches
+        st.session_state['cant_ambiguos'] = len(unresolved_names)
         resolved_ambiguous = {}
-        if unresolved_names:
-            st.warning("⚠️ Se detectaron nombres ambiguos o duplicados en distintas áreas. Selecciona la persona correcta de BUK:")
-            for idx_un, (raw_n, sec_s, candidates, item_obj) in enumerate(unresolved_names):
-                col_a, col_b = st.columns([1, 2])
-                sec_disp = f" (Sección: {sec_s})" if sec_s else ""
-                col_a.write(f"**Nombre detectado:** `{raw_n}`{sec_disp}")
-                sel_buk = col_b.selectbox(
-                    f"Asignar a colaborador BUK:",
-                    options=["-- Ignorar --"] + candidates,
-                    key=f"amb_name_{idx_un}"
-                )
-                if sel_buk != "-- Ignorar --":
-                    resolved_ambiguous[idx_un] = (sel_buk, item_obj)
-
-        for idx_un, (selected_buk_name, item_obj) in resolved_ambiguous.items():
-            mapped_entries.append((selected_buk_name, item_obj))
-
-        # ---------------------------------------------------------------------
-        # VALIDACIÓN Y ALERTAS DE HORARIOS Y SIGLAS
-        # ---------------------------------------------------------------------
-        st.subheader("⏱️ Validación de Siglas y Horarios de Turno")
         
+        if unresolved_names:
+            render_notice("warning", "Discrepancia de Nombres", f"Se detectaron {len(unresolved_names)} nombres que requieren confirmación.")
+            for idx_un, (raw_n, sec_s, candidates, item_obj) in enumerate(unresolved_names):
+                col_i, col_s = st.columns([1, 2])
+                with col_i:
+                    st.markdown(f"<span class='badge-mono'>{sec_s or 'GENERAL'}</span> <strong>{raw_n}</strong>", unsafe_allow_html=True)
+                with col_s:
+                    sel = st.selectbox(f"Asignar {raw_n}", ["-- Omitir --"] + candidates, key=f"amb_{idx_un}", label_visibility="collapsed")
+                    if sel != "-- Omitir --":
+                        resolved_ambiguous[idx_un] = (sel, item_obj)
+
+        for idx_un, (selected_name, item_obj) in resolved_ambiguous.items():
+            mapped_entries.append((selected_name, item_obj))
+
+        # ---------------------------------------------------------------------
+        # VALIDACIÓN DE SIGLAS
+        # ---------------------------------------------------------------------
         unknown_shifts_found = set()
         for buk_name, schedule_obj in mapped_entries:
             for dk in dias_keys:
@@ -523,71 +486,111 @@ if buk_file is not None:
                 if is_unk and sigla not in valid_siglas:
                     unknown_shifts_found.add((raw_time, sigla))
 
+        st.session_state['cant_desconocidos'] = len(unknown_shifts_found)
         sigla_replacements = {}
+        
         if unknown_shifts_found:
-            st.error("⚠️ Se detectaron horarios no registrados en la tabla oficial BUK (`turnosSemanales`). Selecciona la sigla oficial correspondiente:")
+            render_notice("error", "Horarios no Catalogados", f"Se encontraron {len(unknown_shifts_found)} horarios sin equivalencia en turnosSemanales.")
             for raw_t, estimated_sig in unknown_shifts_found:
-                col_s1, col_s2 = st.columns([1, 2])
-                col_s1.write(f"Horario no registrado: `{raw_t}`")
-                
-                closest_matches = difflib.get_close_matches(estimated_sig, valid_siglas, n=1)
-                default_idx = valid_siglas.index(closest_matches[0]) if closest_matches else 0
-                
-                chosen_sig = col_s2.selectbox(
-                    f"Seleccionar Sigla BUK para '{raw_t}':",
-                    options=valid_siglas,
-                    index=default_idx,
-                    key=f"unk_shift_{raw_t}"
-                )
-                sigla_replacements[raw_t] = chosen_sig
-
-        # Detección de duplicados en la asignación final
-        assigned_names = [e[0] for e in mapped_entries]
-        duplicates = [name for name in set(assigned_names) if assigned_names.count(name) > 1]
-        if duplicates:
-            st.error(f"⚠️ **Alerta de Duplicados:** Hay colaboradores asignados más de una vez: {', '.join(duplicates)}. Por favor verifica los nombres resueltos arriba.")
+                col_t1, col_t2 = st.columns([1, 2])
+                with col_t1:
+                    st.markdown(f"<span class='badge-mono'>{raw_t}</span>", unsafe_allow_html=True)
+                with col_t2:
+                    matches = difflib.get_close_matches(estimated_sig, valid_siglas, n=1)
+                    def_idx = valid_siglas.index(matches[0]) if matches else 0
+                    chosen = st.selectbox(f"Reemplazo {raw_t}", valid_siglas, index=def_idx, key=f"unk_{raw_t}", label_visibility="collapsed")
+                    sigla_replacements[raw_t] = chosen
 
         # ---------------------------------------------------------------------
-        # GENERACIÓN Y EXPORTACIÓN DEL ARCHIVO FINAL BUK
+        # VISTA PREVIA Y AUDITORÍA POR ÁREA (BARRA / SALÓN / COCINA)
+        # -----------------------------------------------------------------------------
+        st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
+        st.markdown("<span class='badge-mono badge-accent'>CONTROL DE CALIDAD PRE-EXPORTACIÓN</span>", unsafe_allow_html=True)
+        st.markdown("### Vista Previa y Verificación por Área")
+
+        # Construcción reactiva del dataset consolidado
+        df_staging = tc_df.copy()
+        for f_col in columnas_fechas_buk:
+            if f_col not in df_staging.columns:
+                df_staging[f_col] = 'BASE'
+
+        assigned_names_set = set()
+        for buk_name, schedule_obj in mapped_entries:
+            if buk_name in df_staging['Nombre del Colaborador'].values:
+                assigned_names_set.add(buk_name)
+                idx = df_staging[df_staging['Nombre del Colaborador'] == buk_name].index[0]
+                for idx_d, dk in enumerate(dias_keys):
+                    raw_time = schedule_obj.get(dk, "")
+                    sigla, is_unk = convert_time_to_buk_sigla(raw_time, shift_map)
+                    sigla = sigla_replacements.get(raw_time, sigla_replacements.get(sigla, sigla))
+                    df_staging.at[idx, columnas_fechas_buk[idx_d]] = sigla
+
+        # Segmentador y Controles de Filtro
+        col_filtro_area, col_filtro_modo = st.columns([2, 2])
+        with col_filtro_area:
+            areas_disponibles = ["TODAS"] + sorted([str(a) for a in df_staging['Área'].dropna().unique() if str(a).strip() != ""])
+            area_seleccionada = st.selectbox("Filtrar por Área operativa:", areas_disponibles, index=0)
+        
+        with col_filtro_modo:
+            solo_asignados = st.toggle("Mostrar únicamente colaboradores con turnos asignados", value=False)
+
+        # Aplicación del filtrado
+        df_display = df_staging.copy()
+        if area_seleccionada != "TODAS":
+            df_display = df_display[df_display['Área'].str.upper() == area_seleccionada.upper()]
+
+        total_area = len(df_display)
+        con_turno_area = sum(df_display['Nombre del Colaborador'].isin(assigned_names_set))
+        turnos_base_area = total_area - con_turno_area
+
+        if solo_asignados:
+            df_display = df_display[df_display['Nombre del Colaborador'].isin(assigned_names_set)]
+
+        # Render de métricas de cobertura
+        render_preview_metrics(
+            area_label=area_seleccionada,
+            total_colabs=total_area,
+            con_turno=con_turno_area,
+            turnos_base=turnos_base_area
+        )
+
+        columnas_a_mostrar = ['Nombre del Colaborador', 'Área']
+        if 'Cargo' in df_display.columns:
+            columnas_a_mostrar.append('Cargo')
+        columnas_a_mostrar += columnas_fechas_buk
+
+        st.dataframe(
+            df_display[columnas_a_mostrar],
+            use_container_width=True,
+            hide_index=True
+        )
+
         # ---------------------------------------------------------------------
-        st.divider()
-        if st.button("🚀 Generar y Exportar Planilla BUK Final"):
-            resultado_buk = tc_df.copy()
+        # CONSOLIDACIÓN Y DESCARGA
+        # ---------------------------------------------------------------------
+        st.markdown("<div style='height: 1.25rem;'></div>", unsafe_allow_html=True)
+        col_act, _ = st.columns([1, 2])
+        with col_act:
+            btn_generar = st.button("Consolidar Matriz BUK Final", use_container_width=True)
             
-            for fecha_col in columnas_fechas_buk:
-                if fecha_col not in resultado_buk.columns:
-                    resultado_buk[fecha_col] = 'BASE'
+        if btn_generar:
+            render_notice("success", "Compilación Exitosa", "Planilla validada y lista para descarga.")
 
-            for buk_name, schedule_obj in mapped_entries:
-                if buk_name in resultado_buk['Nombre del Colaborador'].values:
-                    idx = resultado_buk[resultado_buk['Nombre del Colaborador'] == buk_name].index[0]
-                    for idx_d, dk in enumerate(dias_keys):
-                        raw_time = schedule_obj.get(dk, "")
-                        sigla, is_unk = convert_time_to_buk_sigla(raw_time, shift_map)
-                        
-                        if raw_time in sigla_replacements:
-                            sigla = sigla_replacements[raw_time]
-                        elif sigla in sigla_replacements:
-                            sigla = sigla_replacements[sigla]
-                            
-                        resultado_buk.at[idx, columnas_fechas_buk[idx_d]] = sigla
-
-            st.success("¡Planilla generada con éxito!")
-            st.dataframe(resultado_buk[['Nombre del Colaborador', 'RUT', 'Área'] + columnas_fechas_buk], use_container_width=True)
-
-            output_bytes = io.BytesIO()
-            with pd.ExcelWriter(output_bytes, engine='openpyxl') as writer:
-                resultado_buk.to_excel(writer, sheet_name='turnosColaboradores', index=False)
+            out = io.BytesIO()
+            with pd.ExcelWriter(out, engine='openpyxl') as writer:
+                df_staging.to_excel(writer, sheet_name='turnosColaboradores', index=False)
                 for sheet_n in xl.sheet_names:
                     if sheet_n != 'turnosColaboradores':
                         xl.parse(sheet_n).to_excel(writer, sheet_name=sheet_n, index=False)
 
-            st.download_button(
-                label="📥 Descargar ReporteTurnosColaboradores.xlsx para BUK",
-                data=output_bytes.getvalue(),
-                file_name=f"ReporteTurnosColaboradores_{columnas_fechas_buk[0]}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
+            col_down, _ = st.columns([1, 2])
+            with col_down:
+                st.download_button(
+                    label="Descargar Reporte BUK (.xlsx)",
+                    data=out.getvalue(),
+                    file_name=f"ReporteTurnosColaboradores_{columnas_fechas_buk[0]}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
 else:
-    st.info("Por favor, sube el archivo base `ReporteTurnosColaboradores.xls` en el panel lateral para iniciar.")
+    render_notice("warning", "Esperando archivo base", "Suba la plantilla ReporteTurnosColaboradores.xls en el panel lateral.")
