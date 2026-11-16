@@ -5,6 +5,7 @@ import io
 import re
 import json
 import difflib
+import time
 
 # Modulos de diseno desacoplados
 from utils.ui import (
@@ -156,28 +157,37 @@ def convert_time_to_buk_sigla(val, shift_map):
 
     return clean_val, True
 
-def process_image_with_gemini(image_bytes, api_key, area_context=None):
-    """Inferencia espacial con Gemini Vision Flash."""
+import time
+
+def process_image_with_gemini(image_bytes, mime_type, api_key, area_context=None):
+    """
+    Retorna una tupla: (lista_registros, mensaje_error)
+    """
     if not HAS_GEMINI:
-        render_notice("error", "Dependencia faltante", "Libreria google-generativeai no instalada")
-        return None
+        return None, "Libreria google-generativeai no instalada."
     
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-3.5-flash')
+    model = genai.GenerativeModel(
+        model_name='gemini-3.5-flash',
+        generation_config={
+            "response_mime_type": "application/json",
+            "temperature": 0.1
+        }
+    )
     
     prompt = f"""
     Analiza esta imagen que contiene un cuadrante de horarios de personal.
-    Contexto de área seleccionada: {area_context if area_context else 'Determinar por imagen'}.
+    Contexto de area seleccionada por el usuario: {area_context if area_context else 'No especificado (determinar por imagen)'}.
 
     REGLAS DE DISTRIBUCION ESPACIAL PARA SALON:
-    - En planillas de Salón, la tabla esta dividida horizontalmente en dos bloques:
-      1. BLOQUE SUPERIOR: Cargo 'GARZON'.
-      2. BLOQUE INFERIOR: Cargo 'RUNNER'.
-    - Clasifica a cada colaborador segun su posicion vertical respecto a este eje divisor.
+    - En planillas de Salon, la tabla esta dividida horizontalmente en dos bloques principales por una franja o eje divisor:
+      1. BLOQUE SUPERIOR (arriba del eje): Corresponde estrictamente al cargo "GARZON".
+      2. BLOQUE INFERIOR (abajo del eje): Corresponde estrictamente al cargo "RUNNER".
+    - Aunque la imagen no tenga escrita la palabra "GARZON" o "RUNNER" como encabezado, clasifica a cada colaborador segun su posicion vertical respecto a este eje.
 
     REGLAS DE EXTRACCION:
-    - Extrae SOLAMENTE el rango horario (ej. '19:00-02:30', '10:30-18:30'). Ignora horas totales.
-    - Para ausencias o descansos usa 'LIBRE', 'DM', 'SG', 'LICENCIA' o 'COMPENSADO'.
+    - Extrae SOLAMENTE el rango horario (ej. '19:00-02:30', '10:30-18:30'). Ignora por completo el total de horas que aparece debajo (ignora '7', '8', '7,5', etc.).
+    - Para descansos o ausencias escribe 'LIBRE', 'DM', 'SG', 'LICENCIA' o 'COMPENSADO'.
     
     Retorna UNICAMENTE un arreglo JSON valido con esta estructura:
     [
@@ -199,16 +209,16 @@ def process_image_with_gemini(image_bytes, api_key, area_context=None):
     try:
         response = model.generate_content([
             prompt,
-            {"mime_type": "image/jpeg", "data": image_bytes}
+            {"mime_type": mime_type or "image/jpeg", "data": image_bytes}
         ])
         text_resp = response.text.strip()
-        text_resp = re.sub(r'```json\s*', '', text_resp)
-        text_resp = re.sub(r'```\s*$', '', text_resp)
-        return json.loads(text_resp)
+        text_resp = re.sub(r'^```json\s*', '', text_resp)
+        text_resp = re.sub(r'\s*```$', '', text_resp)
+        data = json.loads(text_resp)
+        return data, None
     except Exception as e:
-        render_notice("error", "Falla de inferencia", str(e))
-        return None
-
+        return None, str(e)
+    
 # -----------------------------------------------------------------------------
 # BARRA LATERAL
 # -----------------------------------------------------------------------------
@@ -271,100 +281,217 @@ if buk_file is not None:
         ambiguos=st.session_state.get('cant_ambiguos', 0),
         desconocidos=st.session_state.get('cant_desconocidos', 0)
     )
-    
-    st.markdown("<span class='badge-mono badge-accent'>CANAL DE INGRESO</span>", unsafe_allow_html=True)
-    metodo = st.radio(
-        label="Canal de entrada",
-        options=["Imágenes de Cuadrantes (Vision IA)", "Planilla de Datos (Excel / CSV)"],
-        horizontal=True,
-        label_visibility="collapsed"
-    )
 
-    if metodo == "Imágenes de Cuadrantes (Vision IA)":
-        tab_barra, tab_salon, tab_cocina, tab_general = st.tabs([
-            "Barra",
-            "Salón",
-            "Cocina / Producción",
-            "Documentos Mixtos"
-        ])
+    st.markdown("""
+<div style="margin: 1.5rem 0 1rem 0;">
+    <h3 style="font-family: 'Syne', sans-serif; font-size: 1.15rem; font-weight: 700; margin-bottom: 0.2rem;">
+        Entrada de Turnos y Cuadrantes
+    </h3>
+    <p style="color: var(--text-secondary); font-size: 0.85rem; margin: 0;">
+        Selecciona el canal de origen para los turnos semanales.
+    </p>
+</div>
+""", unsafe_allow_html=True)
 
-        with tab_barra:
-            render_area_spec("Área Barra", "Asignacion directa a Bartenders.", "BARRA")
-            uploaded_barra = st.file_uploader("Barra", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="up_barra", label_visibility="collapsed")
+metodo = st.radio(
+    label="Canal de entrada",
+    options=["Imagenes de Cuadrantes (Vision IA)", "Planilla de Datos (Excel / CSV)"],
+    horizontal=True,
+    label_visibility="collapsed"
+)
 
-        with tab_salon:
-            render_area_spec("Regla Espacial de Salón", "Division por franja: Garzones arriba, Runners abajo.", "SALON")
-            tipo_carga_salon = st.radio("Modalidad de carga", ["Pliego completo (Deteccion espacial)", "Recortes separados"], horizontal=True)
+raw_schedules = []
 
-            if tipo_carga_salon == "Pliego completo (Deteccion espacial)":
-                uploaded_salon_completo = st.file_uploader("Salón completo", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="up_salon_comp", label_visibility="collapsed")
-                uploaded_garzones, uploaded_runners = [], []
-            else:
-                col_g, col_r = st.columns(2)
-                with col_g:
-                    st.caption("Bloque Superior: Garzones")
-                    uploaded_garzones = st.file_uploader("Garzones", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="up_garz", label_visibility="collapsed")
-                with col_r:
-                    st.caption("Bloque Inferior: Runners")
-                    uploaded_runners = st.file_uploader("Runners", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="up_runn", label_visibility="collapsed")
-                uploaded_salon_completo = []
+if metodo == "Imagenes de Cuadrantes (Vision IA)":
+    tab_barra, tab_salon, tab_cocina, tab_general = st.tabs([
+        "Barra",
+        "Salón",
+        "Cocina / Producción",
+        "Documentos Mixtos"
+    ])
 
-            uploaded_salon = (uploaded_salon_completo or []) + (uploaded_garzones or []) + (uploaded_runners or [])
+    with tab_barra:
+        render_area_spec(
+            title="Area Barra",
+            description="Asignación directa a Bartenders. Resuelve automáticamente homónimos hacia el equipo de coctelería.",
+            tag="Area: BARRA"
+        )
+        uploaded_barra = st.file_uploader(
+            "Cargar cuadrantes de Barra",
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=True,
+            key="up_barra",
+            label_visibility="collapsed"
+        )
 
-        with tab_cocina:
-            render_area_spec("Área Cocina y Producción", "Caliente, Frio, Nikkei, Cooperia y Jefaturas.", "COCINA")
-            uploaded_cocina = st.file_uploader("Cocina", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="up_cocina", label_visibility="collapsed")
-
-        with tab_general:
-            render_area_spec("Documentos Multizona", "Planillas con encabezados mixtos explicitos.", "MIXTO")
-            uploaded_general = st.file_uploader("Mixtos", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="up_general", label_visibility="collapsed")
-
-        lotes_carga = [
-            (uploaded_barra, "BARRA", "BARTENDER"),
-            (uploaded_cocina, "COCINA", "COCINA"),
-            (uploaded_salon_completo, "SALON", None),
-            (uploaded_garzones, "SALON", "GARZON"),
-            (uploaded_runners, "SALON", "RUNNER"),
-            (uploaded_general, None, None)
-        ]
-
-        conteos_por_area = {
-            "Barra": len(uploaded_barra) if uploaded_barra else 0,
-            "Salón": len(uploaded_salon) if uploaded_salon else 0,
-            "Cocina": len(uploaded_cocina) if uploaded_cocina else 0,
-            "Mixtos": len(uploaded_general) if uploaded_general else 0,
-        }
+    with tab_salon:
+        render_area_spec(
+            title="Regla Espacial de Salón",
+            description="Franja horizontal divisoria: bloque superior para Garzones y bloque inferior para Runners.",
+            tag="Area: SALON"
+        )
         
-        if sum(conteos_por_area.values()) > 0:
-            render_queue_status(conteos_por_area)
+        tipo_carga_salon = st.radio(
+            label="Modalidad de carga para Salón",
+            options=["Pliego completo (Detección espacial automática)", "Recortes separados por cargo"],
+            horizontal=True
+        )
+
+        if tipo_carga_salon == "Pliego completo (Detección espacial automática)":
+            uploaded_salon_completo = st.file_uploader(
+                "Subir cuadrante general de Salón",
+                type=["jpg", "jpeg", "png"],
+                accept_multiple_files=True,
+                key="up_salon_comp",
+                label_visibility="collapsed"
+            )
+            uploaded_garzones, uploaded_runners = [], []
+        else:
+            col_g, col_r = st.columns(2)
+            with col_g:
+                st.markdown("<span style='font-size:0.8rem; font-weight:600; color:var(--text-secondary);'>Bloque Superior: Garzones</span>", unsafe_allow_html=True)
+                uploaded_garzones = st.file_uploader(
+                    "Garzones",
+                    type=["jpg", "jpeg", "png"],
+                    accept_multiple_files=True,
+                    key="up_garz",
+                    label_visibility="collapsed"
+                )
+            with col_r:
+                st.markdown("<span style='font-size:0.8rem; font-weight:600; color:var(--text-secondary);'>Bloque Inferior: Runners</span>", unsafe_allow_html=True)
+                uploaded_runners = st.file_uploader(
+                    "Runners",
+                    type=["jpg", "jpeg", "png"],
+                    accept_multiple_files=True,
+                    key="up_runn",
+                    label_visibility="collapsed"
+                )
+            uploaded_salon_completo = []
+
+        uploaded_salon = (uploaded_salon_completo or []) + (uploaded_garzones or []) + (uploaded_runners or [])
+
+    with tab_cocina:
+        render_area_spec(
+            title="Area Cocina y Producción",
+            description="Cuadrantes de Línea Caliente, Frío, Nikkei, Coopería y Jefaturas de Cocina.",
+            tag="Area: COCINA"
+        )
+        uploaded_cocina = st.file_uploader(
+            "Cargar cuadrantes de Cocina",
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=True,
+            key="up_cocina",
+            label_visibility="collapsed"
+        )
+
+    with tab_general:
+        render_area_spec(
+            title="Documentos Multizona",
+            description="Formatos que cuentan con encabezados visibles explícitos por columna o fila.",
+            tag="Deteccion Mixta"
+        )
+        uploaded_general = st.file_uploader(
+            "Cargar documentos mixtos",
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=True,
+            key="up_general",
+            label_visibility="collapsed"
+        )
+
+    # Agrupación de lotes con contexto de área forzada[cite: 1]
+    lotes_carga = [
+        (uploaded_barra, "BARRA", "BARTENDER"),
+        (uploaded_cocina, "COCINA", "COCINA"),
+        (uploaded_salon_completo, "SALON", None),
+        (uploaded_garzones, "SALON", "GARZON"),
+        (uploaded_runners, "SALON", "RUNNER"),
+        (uploaded_general, None, None)
+    ]
+
+    # Diccionario de conteos para la barra de estado
+    conteos_por_area = {
+        "Barra": len(uploaded_barra) if uploaded_barra else 0,
+        "Salón": len(uploaded_salon) if uploaded_salon else 0,
+        "Cocina": len(uploaded_cocina) if uploaded_cocina else 0,
+        "Mixtos": len(uploaded_general) if uploaded_general else 0,
+    }
+    
+    total_archivos = sum(conteos_por_area.values())
+
+    if total_archivos > 0:
+        render_queue_status(conteos_por_area)
+        
+        if not gemini_api_key:
+            st.warning("API Key de Gemini no detectada. Verifique las credenciales en el panel lateral.")
+        else:
+            col_btn, _ = st.columns([1, 2])
+            with col_btn:
+                ejecutar_extraccion = st.button("Iniciar Extraccion con Vision Artificial", use_container_width=True)
             
-            if not gemini_api_key:
-                render_notice("warning", "Credencial Requerida", "Ingrese la clave API de Gemini para iniciar.")
+            if ejecutar_extraccion:
+                with st.spinner("Procesando matriz visual por area..."):
+                    all_extracted = []
+                    extraction_logs = []
+                    
+                    for archivos, area_f, cargo_f in lotes_carga:
+                        if not archivos:
+                            continue
+                        for img_file in archivos:
+                            img_bytes = img_file.getvalue()
+                            extracted, err_msg = process_image_with_gemini(
+                                image_bytes=img_bytes,
+                                mime_type=img_file.type,
+                                api_key=gemini_api_key,
+                                area_context=area_f
+                            )
+                            
+                            area_label = area_f if area_f else "MIXTO"
+                            if err_msg:
+                                extraction_logs.append({
+                                    "archivo": img_file.name,
+                                    "area": area_label,
+                                    "ok": False,
+                                    "detalle": err_msg
+                                })
+                            elif extracted:
+                                for item in extracted:
+                                    if area_f:
+                                        item["seccion"] = area_f
+                                    if cargo_f:
+                                        item["cargo"] = cargo_f
+                                all_extracted.extend(extracted)
+                                extraction_logs.append({
+                                    "archivo": img_file.name,
+                                    "area": area_label,
+                                    "ok": True,
+                                    "detalle": f"{len(extracted)} colaboradores detectados"
+                                })
+                            else:
+                                extraction_logs.append({
+                                    "archivo": img_file.name,
+                                    "area": area_label,
+                                    "ok": False,
+                                    "detalle": "La IA devolvio una lista vacia"
+                                })
+                            
+                            # Pausa breve para evitar bloqueo por limite de peticiones por minuto
+                            time.sleep(1.5)
+
+                    st.session_state['extracted_schedules'] = all_extracted
+                    st.session_state['extraction_logs'] = extraction_logs
+                    st.rerun()
+
+    # Mostrar reporte persistente de lo que ocurrio con cada imagen
+    if 'extraction_logs' in st.session_state and st.session_state['extraction_logs']:
+        st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
+        for log in st.session_state['extraction_logs']:
+            if log["ok"]:
+                st.success(f"[{log['area']}] {log['archivo']}: {log['detalle']}")
             else:
-                col_btn, _ = st.columns([1, 2])
-                with col_btn:
-                    if st.button("Iniciar Extracción Visual", use_container_width=True):
-                        with st.spinner("Procesando matriz visual con reglas espaciales..."):
-                            all_extracted = []
-                            for archivos, area_f, cargo_f in lotes_carga:
-                                if not archivos:
-                                    continue
-                                for img_file in archivos:
-                                    img_bytes = img_file.read()
-                                    extracted = process_image_with_gemini(img_bytes, gemini_api_key, area_context=area_f)
-                                    if extracted:
-                                        for item in extracted:
-                                            if area_f:
-                                                item["seccion"] = area_f
-                                            if cargo_f:
-                                                item["cargo"] = cargo_f
-                                        all_extracted.extend(extracted)
+                st.error(f"[{log['area']}] {log['archivo']} fallo: {log['detalle']}")
 
-                            st.session_state['extracted_schedules'] = all_extracted
-                            st.rerun()
-
-        if 'extracted_schedules' in st.session_state:
-            raw_schedules = st.session_state['extracted_schedules']
+    if 'extracted_schedules' in st.session_state:
+        raw_schedules = st.session_state['extracted_schedules']
 
     elif metodo == "Planilla de Datos (Excel / CSV)":
         uploaded_excel = st.file_uploader("Subir cuadrante (.xlsx / .csv)", type=["xlsx", "xls", "csv"])
@@ -427,12 +554,20 @@ if buk_file is not None:
                 if len(candidates_df) == 1:
                     exact_match = candidates_df.iloc[0]['Nombre del Colaborador']
                 elif len(candidates_df) > 1:
+                    # Aplicar filtro por Área
                     if norm_a:
-                        area_filtered = candidates_df[candidates_df['Área'].str.upper() == norm_a]
+                        if norm_a == 'COCINA':
+                            area_filtered = candidates_df[candidates_df['Área'].str.upper().isin(['COCINA', 'PRODUCCION', 'PRODUCCIÓN'])]
+                        else:
+                            area_filtered = candidates_df[candidates_df['Área'].str.upper() == norm_a]
+                        
                         if len(area_filtered) == 1:
                             exact_match = area_filtered.iloc[0]['Nombre del Colaborador']
+                        elif len(area_filtered) > 1:
+                            unresolved_names.append((raw_n, sec_str, area_filtered['Nombre del Colaborador'].tolist(), item))
+                            continue
                         else:
-                            unresolved_names.append((raw_n, sec_str, area_filtered['Nombre del Colaborador'].tolist() if not area_filtered.empty else candidates_df['Nombre del Colaborador'].tolist(), item))
+                            unresolved_names.append((raw_n, sec_str, candidates_df['Nombre del Colaborador'].tolist(), item))
                             continue
                     else:
                         unresolved_names.append((raw_n, sec_str, candidates_df['Nombre del Colaborador'].tolist(), item))
@@ -442,7 +577,11 @@ if buk_file is not None:
                     if fuzzy:
                         cand_df = tc_df[tc_df['Nombre del Colaborador'].str.upper().isin(fuzzy)]
                         if norm_a:
-                            area_filtered = cand_df[cand_df['Área'].str.upper() == norm_a]
+                            if norm_a == 'COCINA':
+                                area_filtered = cand_df[cand_df['Área'].str.upper().isin(['COCINA', 'PRODUCCION', 'PRODUCCIÓN'])]
+                            else:
+                                area_filtered = cand_df[cand_df['Área'].str.upper() == norm_a]
+                                
                             if len(area_filtered) == 1:
                                 exact_match = area_filtered.iloc[0]['Nombre del Colaborador']
                             else:
@@ -451,9 +590,6 @@ if buk_file is not None:
                         else:
                             unresolved_names.append((raw_n, sec_str, cand_df['Nombre del Colaborador'].tolist(), item))
                             continue
-                    else:
-                        unresolved_names.append((raw_n, sec_str, nombres_buk_oficiales, item))
-                        continue
 
             if exact_match:
                 mapped_entries.append((exact_match, item))
