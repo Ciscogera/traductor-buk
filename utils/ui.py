@@ -1,121 +1,124 @@
-import os
+from pathlib import Path
 import streamlit as st
+import pandas as pd
+from utils.icons import get_icon
 
-def get_svg_icon(name: str) -> str:
-    """Catalogo centralizado de iconos vectoriales limpios."""
-    icons = {
-        "alert": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
-        "check": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
-        "shield": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
-        "filter": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>'
-    }
-    return icons.get(name, "")
+def load_theme(css_path: str = "styles/theme.css"):
+    path = Path(css_path)
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-def load_custom_css(file_path: str = "styles/theme.css"):
-    """Carga la hoja CSS desacoplada."""
-    if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            css_content = f.read()
-        st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
-    else:
-        st.warning(f"Hoja de estilos no encontrada en: {file_path}")
-
-def render_header(title: str, subtitle: str, tag: str):
-    """Renderiza la cabecera principal."""
+def render_ops_header(title: str, subtitle: str, badge_text: str):
+    icon_svg = get_icon("layers")
     html = f"""
-    <div class="header-container">
+    <div class="ops-header">
+        <div class="ops-title-group">
+            <div class="ops-icon-emblem">{icon_svg}</div>
+            <div>
+                <h1 class="ops-title">{title}</h1>
+                <span class="ops-subtitle">{subtitle}</span>
+            </div>
+        </div>
+        <div class="ops-status-pill">
+            <span class="pulse-dot"></span>
+            {badge_text}
+        </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+def render_bento_telemetry(total_dotacion: int, asignados: int, ambiguos: int, siglas_unk: int):
+    pct = round((asignados / total_dotacion * 100), 1) if total_dotacion > 0 else 0.0
+    sin_asignar = max(total_dotacion - asignados, 0)
+    
+    color_asignados = "#57F2CC" if asignados > 0 else "#F3F5F8"
+    color_ambiguos = "#FF5A5F" if ambiguos > 0 else "#57F2CC"
+    color_siglas = "#E0A96D" if siglas_unk > 0 else "#57F2CC"
+
+    html = f"""
+    <div class="bento-grid">
+        <div class="bento-card">
+            <div class="bento-card-top">
+                <span class="bento-label">Dotacion Registrada</span>
+                <span class="bento-icon">{get_icon("users")}</span>
+            </div>
+            <div class="bento-value">{total_dotacion}</div>
+            <div class="bento-meta">Colaboradores en plantilla BUK</div>
+        </div>
+        <div class="bento-card">
+            <div class="bento-card-top">
+                <span class="bento-label">Con Turnos Asignados</span>
+                <span class="bento-icon" style="color: {color_asignados};">{get_icon("check_circle")}</span>
+            </div>
+            <div class="bento-value" style="color: {color_asignados};">{asignados} <span style="font-size: 1rem; opacity: 0.75;">({pct}%)</span></div>
+            <div class="bento-meta">Turno Base / Sin Asignar: {sin_asignar}</div>
+        </div>
+        <div class="bento-card">
+            <div class="bento-card-top">
+                <span class="bento-label">Nombres Ambiguos</span>
+                <span class="bento-icon" style="color: {color_ambiguos};">{get_icon("alert_triangle")}</span>
+            </div>
+            <div class="bento-value" style="color: {color_ambiguos};">{ambiguos}</div>
+            <div class="bento-meta">Pendientes de desempate por area</div>
+        </div>
+        <div class="bento-card">
+            <div class="bento-card-top">
+                <span class="bento-label">Siglas No Registradas</span>
+                <span class="bento-icon" style="color: {color_siglas};">{get_icon("clock")}</span>
+            </div>
+            <div class="bento-value" style="color: {color_siglas};">{siglas_unk}</div>
+            <div class="bento-meta">Requieren homologacion manual</div>
+        </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+def render_area_banner(title: str, description: str, code_tag: str):
+    html = f"""
+    <div class="spec-banner">
         <div>
-            <span class="badge-mono badge-accent">{tag}</span>
-            <h1 class="header-title">{title}</h1>
-            <p class="header-subtitle">{subtitle}</p>
+            <div class="spec-title">{title}</div>
+            <div class="spec-desc">{description}</div>
         </div>
+        <span class="spec-code">{code_tag}</span>
     </div>
     """
     st.markdown(html, unsafe_allow_html=True)
 
-def render_telemetry(total_buk: int, extraidos: int, ambiguos: int, desconocidos: int):
-    """Panel Bento de conteo inicial."""
-    html = f"""
-    <div class="telemetry-grid">
-        <div class="telemetry-card">
-            <div class="telemetry-label">Base Oficial BUK</div>
-            <div class="telemetry-value">{total_buk}</div>
-        </div>
-        <div class="telemetry-card">
-            <div class="telemetry-label">Turnos Detectados</div>
-            <div class="telemetry-value">{extraidos}</div>
-        </div>
-        <div class="telemetry-card">
-            <div class="telemetry-label">Identidades Ambiguas</div>
-            <div class="telemetry-value" style="color: {'var(--status-warn-text)' if ambiguos > 0 else 'var(--text-primary)'};">{ambiguos}</div>
-        </div>
-        <div class="telemetry-card">
-            <div class="telemetry-label">Siglas no Registradas</div>
-            <div class="telemetry-value" style="color: {'var(--status-error-text)' if desconocidos > 0 else 'var(--text-primary)'};">{desconocidos}</div>
-        </div>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+def render_shift_audit_table(df: pd.DataFrame, date_cols: list[str]):
+    """Renderiza la matriz de turnos en vidrio oscuro con badges semánticos por sigla."""
+    cols_to_show = ['Nombre del Colaborador', 'Área'] + date_cols
+    sub_df = df[cols_to_show].copy()
 
-def render_area_spec(title: str, description: str, tag: str):
-    """Ficha informativa por area de carga."""
-    html = f"""
-    <div class="area-spec-box">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-            <span class="area-spec-title">{title}</span>
-            <span class="badge-mono">{tag}</span>
-        </div>
-        <div class="area-spec-desc">{description}</div>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+    headers_html = "".join([f"<th>{col}</th>" for col in cols_to_show])
+    rows_html = []
 
-def render_queue_status(conteos_dict: dict):
-    """Balance de documentos en cola."""
-    items_html = "".join([
-        f"<span class='badge-mono' style='margin-right: 0.5rem;'>{area}: {count}</span>"
-        for area, count in conteos_dict.items() if count > 0
-    ])
-    html = f"""
-    <div style="margin: 0.85rem 0; display: flex; align-items: center; gap: 0.6rem;">
-        <span class="badge-mono badge-accent">COLA DE PROCESAMIENTO</span>
-        {items_html}
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+    for _, row in sub_df.iterrows():
+        cells = [
+            f"<td style='font-weight: 600;'>{row['Nombre del Colaborador']}</td>",
+            f"<td><span class='tag-area'>{row['Área']}</span></td>"
+        ]
+        for d_col in date_cols:
+            val = str(row[d_col]).strip()
+            if val in ['BASE', 'nan', '']:
+                cells.append(f"<td><span class='shift-base'>BASE</span></td>")
+            elif val in ['L', 'C']:
+                cells.append(f"<td><span class='shift-libre'>{val}</span></td>")
+            else:
+                cells.append(f"<td><span class='shift-active'>{val}</span></td>")
+        rows_html.append(f"<tr>{''.join(cells)}</tr>")
 
-def render_preview_metrics(area_label: str, total_colabs: int, con_turno: int, turnos_base: int):
-    """Metricas operativas de la vista previa filtrada por area."""
-    pct = round((con_turno / total_colabs * 100), 1) if total_colabs > 0 else 0
-    html = f"""
-    <div class="preview-summary-bar">
-        <div class="preview-stat">
-            <span class="preview-stat-label">Area Auditada</span>
-            <span class="preview-stat-val" style="color: var(--accent-amber);">{area_label}</span>
-        </div>
-        <div class="preview-stat" style="border-left: 1px solid var(--border-medium); padding-left: 1rem;">
-            <span class="preview-stat-label">Dotacion Registrada</span>
-            <span class="preview-stat-val">{total_colabs}</span>
-        </div>
-        <div class="preview-stat" style="border-left: 1px solid var(--border-medium); padding-left: 1rem;">
-            <span class="preview-stat-label">Con Turnos Asignados</span>
-            <span class="preview-stat-val" style="color: var(--status-ok-text);">{con_turno} ({pct}%)</span>
-        </div>
-        <div class="preview-stat" style="border-left: 1px solid var(--border-medium); padding-left: 1rem;">
-            <span class="preview-stat-label">Turno Base / Sin Asignar</span>
-            <span class="preview-stat-val" style="color: var(--text-muted);">{turnos_base}</span>
-        </div>
+    table_html = f"""
+    <div class="audit-table-wrapper">
+        <table class="audit-table">
+            <thead>
+                <tr>{headers_html}</tr>
+            </thead>
+            <tbody>
+                {''.join(rows_html)}
+            </tbody>
+        </table>
     </div>
     """
-    st.markdown(html, unsafe_allow_html=True)
-
-def render_notice(level: str, title: str, message: str):
-    """Alertas operativas con contraste accesible."""
-    icon = get_svg_icon("alert" if level in ["warning", "error"] else "check")
-    html = f"""
-    <div class="notice-box {level}">
-        <span class="notice-icon">{icon}</span>
-        <div><strong>{title}:</strong> {message}</div>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown(table_html, unsafe_allow_html=True)
