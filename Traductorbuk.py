@@ -168,7 +168,7 @@ def process_image_with_gemini(image_bytes, mime_type, api_key, area_context=None
     
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        model_name='gemini-3.5-flash',
+        model_name='gemini-3.8-flash',
         generation_config={
             "response_mime_type": "application/json",
             "temperature": 0.1
